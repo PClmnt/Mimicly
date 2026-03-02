@@ -6,21 +6,17 @@ dotenv.config();
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
 
 
-export async function transcribe(text: string) {
+export async function transcribe(audioBlob: File) {
     const mistral = new Mistral({
         apiKey: MISTRAL_API_KEY,
     });
 
 
-    const response = await mistral.chat.complete({
-        model: "ministral-8b-2512",
-        messages: [{
-            role: "user",
-            content: text,
-        }]
-    })
-
-
-    return response.choices[0].message.content
+    const result = await mistral.audio.transcriptions.complete({
+        model: "voxtral-mini-latest",
+        file: audioBlob
+    });
+    console.log(result)
+    return result.text
 }
 

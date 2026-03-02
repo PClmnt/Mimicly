@@ -33,7 +33,6 @@ function App() {
 			}
 
 			recorder?.start()
-			console.log('recording?')
 		} else if (recordState === "recording") {
 			recorderRef?.current?.stop()
 			streamRef?.current?.getTracks().forEach(track => track.stop())
@@ -44,19 +43,31 @@ function App() {
 	};
 
 	useEffect(() => {
-		console.log('here? ')
-		console.log(recordedAudio)
-		console.log(recordState)
-		if (recordedAudio && recordState === "idle") {
-			console.log('here? now ')
+		let ignore = false
+		let controller = new AbortController()
 
-			let formData = new FormData()
-			formData.append("audio", recordedAudio, 'recording.webm')
-			const resp = fetch('/api/transcription', {
-				method: "POST",
-				body: formData
-			})
-			console.log(resp)
+		if (recordedAudio && recordState === "idle") {
+			async function run() {
+				let formData = new FormData()
+				if (recordedAudio) {
+					formData.append("audio", recordedAudio, 'recording.webm')
+				}
+				const resp = await fetch('/api/transcribe', {
+					method: "POST",
+					body: formData,
+					signal: controller.signal
+				})
+
+				const transcription = await resp.json()
+				setOutput(transcription)
+			}
+
+			void run()
+
+		}
+		return () => {
+			ignore = true
+			controller.abort()
 		}
 
 	}, [recordedAudio, recordState])
