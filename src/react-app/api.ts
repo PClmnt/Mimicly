@@ -1,4 +1,4 @@
-import type { Lesson, LessonRequest, ScoreResult } from "./types";
+import type { Lesson, LessonRequest, Phrase, PracticeState, ScoreResult } from "./types";
 
 interface SceneImageResponse {
 	imageUrl: string | null;
@@ -6,6 +6,22 @@ interface SceneImageResponse {
 
 interface LessonResponse {
 	lesson: Lesson;
+}
+
+interface PracticeStateResponse {
+	state: PracticeState | null;
+}
+
+interface ScoreRequestInput {
+	audio: Blob;
+	difficulty: string;
+	language: string;
+	lessonId: string;
+	phrase: Phrase;
+	profileId: string;
+	targetPhrase: string;
+	topic: string;
+	transcriptionCode: string;
 }
 
 function extractErrorMessage(error: unknown) {
@@ -48,6 +64,20 @@ export async function requestLesson(payload: LessonRequest) {
 	}
 }
 
+export async function requestProfileState(profileId: string) {
+	try {
+		const response = await fetch(`/api/profile/${encodeURIComponent(profileId)}`);
+		if (response.status === 404) {
+			return null;
+		}
+
+		const data = await parseJsonOrThrow<PracticeStateResponse>(response);
+		return data.state;
+	} catch (error) {
+		throw new Error(extractErrorMessage(error));
+	}
+}
+
 export async function requestSpeech(text: string, language: string, speed = 0.9) {
 	try {
 		const response = await fetch("/api/speech", {
@@ -81,18 +111,23 @@ export async function requestSceneImage(phrase: string, translation: string, lan
 	}
 }
 
-export async function scorePhrase(
-	audio: Blob,
-	targetPhrase: string,
-	language: string,
-	transcriptionCode: string,
-) {
+export async function scorePhrase(input: ScoreRequestInput) {
 	try {
 		const formData = new FormData();
-		formData.append("audio", audio, "attempt.webm");
-		formData.append("targetPhrase", targetPhrase);
-		formData.append("language", language);
-		formData.append("transcriptionCode", transcriptionCode);
+		formData.append("audio", input.audio, "attempt.webm");
+		formData.append("targetPhrase", input.targetPhrase);
+		formData.append("language", input.language);
+		formData.append("transcriptionCode", input.transcriptionCode);
+		formData.append("profileId", input.profileId);
+		formData.append("lessonId", input.lessonId);
+		formData.append("topic", input.topic);
+		formData.append("difficulty", input.difficulty);
+		formData.append("phraseId", input.phrase.id);
+		formData.append("translation", input.phrase.translation);
+		formData.append("tip", input.phrase.tip);
+		if (input.phrase.romanization) {
+			formData.append("romanization", input.phrase.romanization);
+		}
 
 		const response = await fetch("/api/score", {
 			method: "POST",

@@ -8,7 +8,11 @@ interface PhraseCardProps {
 	imageUrl: string | null;
 	imageLoading: boolean;
 	language: string;
+	lessonDifficulty: string;
+	lessonId: string;
 	phrase: Phrase;
+	profileId: string;
+	topic: string;
 	transcriptionCode: string;
 	onGenerateImage: () => void;
 	onLoadAudio: () => Promise<string | null>;
@@ -22,7 +26,11 @@ export function PhraseCard({
 	imageUrl,
 	imageLoading,
 	language,
+	lessonDifficulty,
+	lessonId,
 	phrase,
+	profileId,
+	topic,
 	transcriptionCode,
 	onGenerateImage,
 	onLoadAudio,
@@ -118,7 +126,17 @@ export function PhraseCard({
 	async function handleScoreAttempt() {
 		try {
 			const blob = new Blob(chunksRef.current, { type: recorderRef.current?.mimeType ?? "audio/webm" });
-			const nextResult = await scorePhrase(blob, phrase.text, language, transcriptionCode);
+			const nextResult = await scorePhrase({
+				audio: blob,
+				difficulty: lessonDifficulty,
+				language,
+				lessonId,
+				phrase,
+				profileId,
+				targetPhrase: phrase.text,
+				topic,
+				transcriptionCode,
+			});
 			setResult(nextResult);
 			setCardPhase("result");
 			onScored(nextResult);

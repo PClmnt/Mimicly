@@ -3,9 +3,12 @@ import OpenAI from "openai";
 import { getLanguageOption, type Difficulty } from "../shared/languages";
 import type { Lesson, ScoreResult } from "../react-app/types";
 
-export interface WorkerSecrets {
+export interface WorkerBindings {
+	LESSON_CACHE: KVNamespace;
+	MEDIA_BUCKET: R2Bucket;
 	MISTRAL_API_KEY: string;
 	OPENAI_API_KEY: string;
+	PRACTICE_DB: D1Database;
 }
 
 interface LessonInput {
@@ -16,47 +19,34 @@ interface LessonInput {
 	phraseCount: number;
 }
 
+interface LessonTemplate {
+	difficulty: Difficulty;
+	intro: string;
+	language: string;
+	nativeLanguage: string;
+	phrases: Array<{
+		difficulty: Difficulty;
+		romanization?: string;
+		text: string;
+		tip: string;
+		translation: string;
+	}>;
+	title: string;
+	topic: string;
+	transcriptionCode: string;
+}
+
 interface ScoreInput {
 	language: string;
 	targetPhrase: string;
 	userTranscription: string;
 }
 
-const lessonCache = createMemoryCache<Lesson>(1000 * 60 * 60);
-const speechCache = createMemoryCache<Uint8Array>(1000 * 60 * 60 * 4);
-const imageCache = createMemoryCache<string | null>(1000 * 60 * 60 * 12);
-
-function createMemoryCache<T>(ttlMs: number) {
-	const store = new Map<string, { expiresAt: number; value: T }>();
-
-	return {
-		get(key: string) {
-			const cached = store.get(key);
-			if (!cached) {
-				return null;
-			}
-
-			if (cached.expiresAt <= Date.now()) {
-				store.delete(key);
-				return null;
-			}
-
-			return cached.value;
-		},
-		set(key: string, value: T) {
-			store.set(key, {
-				expiresAt: Date.now() + ttlMs,
-				value,
-			});
-		},
-	};
-}
-
-function getMistral(env: WorkerSecrets) {
+function getMistral(env: WorkerBindings) {
 	return new Mistral({ apiKey: env.MISTRAL_API_KEY });
 }
 
-function getOpenAI(env: WorkerSecrets) {
+function getOpenAI(env: WorkerBindings) {
 	return new OpenAI({ apiKey: env.OPENAI_API_KEY });
 }
 
@@ -137,7 +127,6 @@ function levenshteinDistance(left: string, right: string) {
 			const insertionCost = current[rightIndex] + 1;
 			const deletionCost = previous[rightIndex + 1] + 1;
 			const substitutionCost = previous[rightIndex] + (left[leftIndex] === right[rightIndex] ? 0 : 1);
-
 			current[rightIndex + 1] = Math.min(insertionCost, deletionCost, substitutionCost);
 		}
 
@@ -149,7 +138,43 @@ function levenshteinDistance(left: string, right: string) {
 	return previous[right.length];
 }
 
-export async function transcribe(env: WorkerSecrets, audioBlob: File, transcriptionCode: string) {
+async function sha256(value: string) {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function buildMediaUrl(kind: "image" | "speech", key: string) {
+	return `/api/media/${kind}/${key}`;
+}
+
+function mapLessonTemplateToLesson(template: LessonTemplate): Lesson {
+	return {
+		id: crypto.randomUUID(),
+		language: template.language,
+		transcriptionCode: template.transcriptionCode,
+		topic: template.topic,
+		difficulty: template.difficulty,
+		nativeLanguage: template.nativeLanguage,
+		createdAt: new Date().toISOString(),
+		title: template.title,
+		intro: template.intro,
+		phrases: template.phrases.map((phrase) => ({
+			id: crypto.randomUUID(),
+			text: phrase.text,
+			translation: phrase.translation,
+			romanization: phrase.romanization,
+			difficulty: phrase.difficulty,
+			tip: phrase.tip,
+		})),
+	};
+}
+
+function decodeBase64(base64: string) {
+	const text = atob(base64);
+	return Uint8Array.from(text, (character) => character.charCodeAt(0));
+}
+
+export async function transcribe(env: WorkerBindings, audioBlob: File, transcriptionCode: string) {
 	const mistral = getMistral(env);
 	const result = await mistral.audio.transcriptions.complete({
 		model: "voxtral-mini-latest",
@@ -160,32 +185,54 @@ export async function transcribe(env: WorkerSecrets, audioBlob: File, transcript
 	return result.text?.trim() ?? "";
 }
 
-export async function generateSceneImage(env: WorkerSecrets, phrase: string, translation: string, language: string) {
-	const cacheKey = JSON.stringify({ phrase, translation, language });
-	const cached = imageCache.get(cacheKey);
-	if (cached !== null) {
-		return cached;
+export async function generateSceneImage(env: WorkerBindings, phrase: string, translation: string, language: string) {
+	const key = await sha256(JSON.stringify({ phrase, translation, language }));
+	const objectKey = `images/${key}.png`;
+	const existing = await env.MEDIA_BUCKET.head(objectKey);
+	if (!existing) {
+		const openai = getOpenAI(env);
+		const response = await openai.images.generate({
+			model: "gpt-image-1-mini",
+			prompt: `Create a clean, warm illustration for a language-learning flashcard. Show the meaning of "${translation}" while preserving the feel of ${language}. No text, no captions, no UI, no borders.`,
+			n: 1,
+			size: "1024x1024",
+		});
+
+		const image = response.data?.[0];
+		if (!image) {
+			throw new Error("Image generation returned no image.");
+		}
+
+		let bytes: Uint8Array;
+		if (image.b64_json) {
+			bytes = decodeBase64(image.b64_json);
+		} else if (image.url) {
+			const downloaded = await fetch(image.url);
+			bytes = new Uint8Array(await downloaded.arrayBuffer());
+		} else {
+			throw new Error("Image generation returned no usable image payload.");
+		}
+
+		await env.MEDIA_BUCKET.put(objectKey, bytes, {
+			httpMetadata: {
+				contentType: "image/png",
+				cacheControl: "public, max-age=31536000, immutable",
+			},
+		});
 	}
 
-	const openai = getOpenAI(env);
-	const response = await openai.images.generate({
-		model: "gpt-image-1-mini",
-		prompt: `Create a clean, warm illustration for a language-learning flashcard. Show the meaning of "${translation}" while preserving the feel of ${language}. No text, no captions, no UI, no borders.`,
-		n: 1,
-		size: "1024x1024",
-	});
-
-	const image = response.data?.[0];
-	const imageUrl = image?.url ?? (image?.b64_json ? `data:image/png;base64,${image.b64_json}` : null);
-	imageCache.set(cacheKey, imageUrl);
-	return imageUrl;
+	return buildMediaUrl("image", key);
 }
 
-export async function generateSpeech(env: WorkerSecrets, text: string, language: string, speed = 0.9) {
-	const cacheKey = JSON.stringify({ text, language, speed });
-	const cached = speechCache.get(cacheKey);
-	if (cached) {
-		return cached;
+export async function generateSpeech(env: WorkerBindings, text: string, language: string, speed = 0.9) {
+	const key = await sha256(JSON.stringify({ text, language, speed }));
+	const objectKey = `speech/${key}.mp3`;
+	const existing = await env.MEDIA_BUCKET.get(objectKey);
+	if (existing) {
+		return {
+			body: existing.body,
+			contentType: existing.httpMetadata?.contentType ?? "audio/mpeg",
+		};
 	}
 
 	const openai = getOpenAI(env);
@@ -198,11 +245,25 @@ export async function generateSpeech(env: WorkerSecrets, text: string, language:
 	});
 
 	const buffer = new Uint8Array(await mp3.arrayBuffer());
-	speechCache.set(cacheKey, buffer);
-	return buffer;
+	await env.MEDIA_BUCKET.put(objectKey, buffer, {
+		httpMetadata: {
+			contentType: "audio/mpeg",
+			cacheControl: "public, max-age=31536000, immutable",
+		},
+	});
+
+	return {
+		body: buffer,
+		contentType: "audio/mpeg",
+	};
 }
 
-export async function scorePronunciation(env: WorkerSecrets, input: ScoreInput): Promise<Omit<ScoreResult, "userTranscription">> {
+export async function readMediaObject(env: WorkerBindings, kind: "image" | "speech", key: string) {
+	const objectKey = kind === "image" ? `images/${key}.png` : `speech/${key}.mp3`;
+	return env.MEDIA_BUCKET.get(objectKey);
+}
+
+export async function scorePronunciation(env: WorkerBindings, input: ScoreInput): Promise<Omit<ScoreResult, "userTranscription">> {
 	const mistral = getMistral(env);
 	const fallbackScore = basicSimilarityScore(input.targetPhrase, input.userTranscription);
 
@@ -251,12 +312,12 @@ Ignore punctuation and whitespace. Reward intelligibility over spelling, but kee
 	};
 }
 
-export async function generateLesson(env: WorkerSecrets, input: LessonInput): Promise<Lesson> {
+export async function generateLesson(env: WorkerBindings, input: LessonInput): Promise<Lesson> {
 	const language = getLanguageOption(input.language);
-	const cacheKey = JSON.stringify(input);
-	const cached = lessonCache.get(cacheKey);
-	if (cached) {
-		return cached;
+	const cacheKey = await sha256(JSON.stringify(input));
+	const cachedTemplate = await env.LESSON_CACHE.get(`lesson:${cacheKey}`, "json") as LessonTemplate | null;
+	if (cachedTemplate) {
+		return mapLessonTemplateToLesson(cachedTemplate);
 	}
 
 	const mistral = getMistral(env);
@@ -281,7 +342,7 @@ Return a JSON object with:
 			},
 			{
 				role: "user",
-				content: `Build the practice set now.`,
+				content: "Build the practice set now.",
 			},
 		],
 		responseFormat: { type: "json_object" },
@@ -290,39 +351,35 @@ Return a JSON object with:
 	const parsed = parseJsonResponse(result.choices?.[0]?.message?.content);
 	const rawPhrases = Array.isArray(parsed?.phrases) ? parsed.phrases : [];
 
-	const phrases = rawPhrases.slice(0, input.phraseCount).map((rawPhrase, index) => {
-		const phrase = rawPhrase as Record<string, unknown>;
-		const romanization = language.romanizationLabel
-			? stringOrFallback(phrase.romanization, "")
-			: "";
+	const template: LessonTemplate = {
+		title: stringOrFallback(parsed?.title, `${input.language} practice`),
+		intro: stringOrFallback(parsed?.intro, `Practice short ${input.language} phrases about ${input.topic}.`),
+		language: input.language,
+		nativeLanguage: input.nativeLanguage,
+		topic: input.topic,
+		difficulty: input.difficulty,
+		transcriptionCode: language.transcriptionCode,
+		phrases: rawPhrases.slice(0, input.phraseCount).map((rawPhrase, index) => {
+			const phrase = rawPhrase as Record<string, unknown>;
+			const romanization = language.romanizationLabel ? stringOrFallback(phrase.romanization, "") : "";
 
-		return {
-			id: crypto.randomUUID(),
-			text: stringOrFallback(phrase.text, `Phrase ${index + 1}`),
-			translation: stringOrFallback(phrase.translation, ""),
-			romanization: romanization || undefined,
-			difficulty: difficultyOrFallback(phrase.difficulty, input.difficulty),
-			tip: stringOrFallback(phrase.tip, "Keep the rhythm natural and avoid rushing the middle sounds."),
-		};
-	}).filter((phrase) => phrase.text && phrase.translation);
+			return {
+				text: stringOrFallback(phrase.text, `Phrase ${index + 1}`),
+				translation: stringOrFallback(phrase.translation, ""),
+				romanization: romanization || undefined,
+				difficulty: difficultyOrFallback(phrase.difficulty, input.difficulty),
+				tip: stringOrFallback(phrase.tip, "Keep the rhythm natural and avoid rushing the middle sounds."),
+			};
+		}).filter((phrase) => phrase.text && phrase.translation),
+	};
 
-	if (phrases.length === 0) {
+	if (template.phrases.length === 0) {
 		throw new Error("Lesson generation failed. Try a different topic.");
 	}
 
-	const lesson: Lesson = {
-		id: crypto.randomUUID(),
-		language: input.language,
-		transcriptionCode: language.transcriptionCode,
-		topic: input.topic,
-		difficulty: input.difficulty,
-		nativeLanguage: input.nativeLanguage,
-		createdAt: new Date().toISOString(),
-		title: stringOrFallback(parsed?.title, `${input.language} practice`),
-		intro: stringOrFallback(parsed?.intro, `Practice short ${input.language} phrases about ${input.topic}.`),
-		phrases,
-	};
+	await env.LESSON_CACHE.put(`lesson:${cacheKey}`, JSON.stringify(template), {
+		expirationTtl: 60 * 60 * 24 * 7,
+	});
 
-	lessonCache.set(cacheKey, lesson);
-	return lesson;
+	return mapLessonTemplateToLesson(template);
 }

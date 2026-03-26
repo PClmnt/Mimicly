@@ -7,6 +7,7 @@ import type { Lesson, SavedPhrase, ScoreResult } from "../types";
 interface PracticeSessionProps {
 	lesson: Lesson;
 	mode: "lesson" | "review";
+	profileId: string;
 	reviewQueue: SavedPhrase[];
 	onBack: () => void;
 	onScored: (phraseId: string, result: ScoreResult) => void;
@@ -15,6 +16,7 @@ interface PracticeSessionProps {
 export function PracticeSession({
 	lesson,
 	mode,
+	profileId,
 	reviewQueue,
 	onBack,
 	onScored,
@@ -169,7 +171,11 @@ export function PracticeSession({
 					imageUrl={sceneUrls[phrase.id] ?? null}
 					imageLoading={sceneLoading[phrase.id] ?? false}
 					language={lesson.language}
+					lessonDifficulty={lesson.difficulty}
+					lessonId={lesson.id}
+					profileId={profileId}
 					phrase={phrase}
+					topic={lesson.topic}
 					transcriptionCode={lesson.transcriptionCode}
 					onGenerateImage={ensureScene}
 					onLoadAudio={() => ensureAudio(phrase)}

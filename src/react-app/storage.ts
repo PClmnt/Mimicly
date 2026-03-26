@@ -11,6 +11,7 @@ import type {
 } from "./types";
 
 const STORAGE_KEY = "mimicly.practice-state.v2";
+const PROFILE_ID_KEY = "mimicly.profile-id.v1";
 const MAX_ATTEMPTS = 60;
 const MAX_RECENT_LESSONS = 4;
 const WEAK_SCORE_THRESHOLD = 90;
@@ -56,6 +57,21 @@ export function savePracticeState(state: PracticeState) {
 	}
 
 	window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+export function getOrCreateProfileId() {
+	if (!canUseStorage()) {
+		return crypto.randomUUID();
+	}
+
+	const existing = window.localStorage.getItem(PROFILE_ID_KEY);
+	if (existing) {
+		return existing;
+	}
+
+	const nextId = crypto.randomUUID();
+	window.localStorage.setItem(PROFILE_ID_KEY, nextId);
+	return nextId;
 }
 
 export function rememberLesson(state: PracticeState, lesson: Lesson): PracticeState {

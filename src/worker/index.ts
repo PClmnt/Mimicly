@@ -1,7 +1,9 @@
 import { Hono } from "hono";
-import { generateLesson, generateSceneImage, generateSpeech, scorePronunciation, transcribe, type WorkerSecrets } from "./ai";
+import { generateLesson, generateSceneImage, generateSpeech, readMediaObject, scorePronunciation, transcribe, type WorkerBindings } from "./ai";
+import { ensureSchema, loadPracticeState, recordPracticeResult, saveLessonForProfile } from "./persistence";
+import type { Lesson } from "../react-app/types";
 
-type Bindings = Env & WorkerSecrets;
+type Bindings = Env & WorkerBindings;
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -17,12 +19,42 @@ function requiredString(value: string | File | null | undefined, label: string) 
 	return value.trim();
 }
 
+function maybeString(value: string | File | null | undefined) {
+	return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 app.onError((error, c) => {
 	console.error(error);
 	return jsonError(c, 500, error.message || "Unexpected server error.");
 });
 
-app.get("/api/health", (c) => c.json({ ok: true }));
+app.get("/api/health", async (c) => {
+	await ensureSchema(c.env);
+	return c.json({ ok: true });
+});
+
+app.get("/api/profile/:profileId", async (c) => {
+	const profileId = c.req.param("profileId");
+	const state = await loadPracticeState(c.env, profileId);
+	return c.json({ state });
+});
+
+app.get("/api/media/:kind/:key", async (c) => {
+	const kind = c.req.param("kind");
+	if (kind !== "image" && kind !== "speech") {
+		return jsonError(c, 404, "Media not found.");
+	}
+
+	const object = await readMediaObject(c.env, kind, c.req.param("key"));
+	if (!object) {
+		return jsonError(c, 404, "Media not found.");
+	}
+
+	const headers = new Headers();
+	object.writeHttpMetadata(headers);
+	headers.set("Cache-Control", "public, max-age=31536000, immutable");
+	return new Response(object.body, { headers });
+});
 
 app.post("/api/transcribe", async (c) => {
 	const formData = await c.req.formData();
@@ -45,14 +77,20 @@ app.post("/api/lesson", async (c) => {
 		return jsonError(c, 400, "Invalid lesson request.");
 	}
 
+	const request = body as Record<string, unknown>;
 	const lesson = await generateLesson(c.env, {
-		language: requiredString((body as Record<string, unknown>).language as string, "Language"),
-		topic: requiredString((body as Record<string, unknown>).topic as string, "Topic"),
-		difficulty: requiredString((body as Record<string, unknown>).difficulty as string, "Difficulty") as "easy" | "medium" | "hard",
-		nativeLanguage: requiredString((body as Record<string, unknown>).nativeLanguage as string, "Native language"),
-		phraseCount: typeof (body as Record<string, unknown>).phraseCount === "number"
-			? Math.min(8, Math.max(3, Math.round((body as Record<string, unknown>).phraseCount as number)))
+		language: requiredString(request.language as string, "Language"),
+		topic: requiredString(request.topic as string, "Topic"),
+		difficulty: requiredString(request.difficulty as string, "Difficulty") as "easy" | "medium" | "hard",
+		nativeLanguage: requiredString(request.nativeLanguage as string, "Native language"),
+		phraseCount: typeof request.phraseCount === "number"
+			? Math.min(8, Math.max(3, Math.round(request.phraseCount)))
 			: 5,
+	});
+
+	await saveLessonForProfile(c.env, {
+		profileId: requiredString(request.profileId as string, "Profile"),
+		lesson,
 	});
 
 	return c.json({ lesson });
@@ -64,11 +102,12 @@ app.post("/api/image", async (c) => {
 		return jsonError(c, 400, "Invalid image request.");
 	}
 
+	const request = body as Record<string, unknown>;
 	const imageUrl = await generateSceneImage(
 		c.env,
-		requiredString((body as Record<string, unknown>).phrase as string, "Phrase"),
-		requiredString((body as Record<string, unknown>).translation as string, "Translation"),
-		requiredString((body as Record<string, unknown>).language as string, "Language"),
+		requiredString(request.phrase as string, "Phrase"),
+		requiredString(request.translation as string, "Translation"),
+		requiredString(request.language as string, "Language"),
 	);
 
 	return c.json({ imageUrl });
@@ -80,17 +119,18 @@ app.post("/api/speech", async (c) => {
 		return jsonError(c, 400, "Invalid speech request.");
 	}
 
-	const text = requiredString((body as Record<string, unknown>).text as string, "Text");
-	const language = requiredString((body as Record<string, unknown>).language as string, "Language");
-	const speed = typeof (body as Record<string, unknown>).speed === "number"
-		? Math.min(1.1, Math.max(0.75, (body as Record<string, unknown>).speed as number))
+	const request = body as Record<string, unknown>;
+	const text = requiredString(request.text as string, "Text");
+	const language = requiredString(request.language as string, "Language");
+	const speed = typeof request.speed === "number"
+		? Math.min(1.1, Math.max(0.75, request.speed))
 		: 0.9;
 
-	const audioBuffer = await generateSpeech(c.env, text, language, speed);
-	return new Response(audioBuffer, {
+	const audio = await generateSpeech(c.env, text, language, speed);
+	return new Response(audio.body, {
 		headers: {
-			"Content-Type": "audio/mpeg",
-			"Cache-Control": "private, max-age=3600",
+			"Content-Type": audio.contentType,
+			"Cache-Control": "public, max-age=31536000, immutable",
 		},
 	});
 });
@@ -112,6 +152,43 @@ app.post("/api/score", async (c) => {
 		targetPhrase,
 		userTranscription,
 	});
+
+	const profileId = maybeString(formData.get("profileId"));
+	const lessonId = maybeString(formData.get("lessonId"));
+	const phraseId = maybeString(formData.get("phraseId"));
+	const topic = maybeString(formData.get("topic"));
+	const difficulty = maybeString(formData.get("difficulty"));
+	const translation = maybeString(formData.get("translation"));
+	const tip = maybeString(formData.get("tip"));
+
+	if (profileId && lessonId && phraseId && topic && difficulty && translation && tip) {
+		const lesson: Lesson = {
+			id: lessonId,
+			language,
+			transcriptionCode,
+			topic,
+			difficulty: difficulty as "easy" | "medium" | "hard",
+			nativeLanguage: "English",
+			createdAt: new Date().toISOString(),
+			title: "",
+			intro: "",
+			phrases: [{
+				id: phraseId,
+				text: targetPhrase,
+				translation,
+				romanization: maybeString(formData.get("romanization")) ?? undefined,
+				difficulty: difficulty as "easy" | "medium" | "hard",
+				tip,
+			}],
+		};
+
+		await recordPracticeResult(c.env, {
+			profileId,
+			lesson,
+			phrase: lesson.phrases[0],
+			result: { userTranscription, ...score },
+		});
+	}
 
 	return c.json({ userTranscription, ...score });
 });

@@ -78,6 +78,7 @@ export interface PracticeStats {
 }
 
 export interface LessonRequest {
+	profileId: string;
 	language: string;
 	topic: string;
 	difficulty: Difficulty;

@@ -3,8 +3,8 @@ import { AppHeader } from "./components/AppHeader";
 import { HomeScreen } from "./components/HomeScreen";
 import { PracticeSession } from "./components/PracticeSession";
 import { DEFAULT_PHRASE_COUNT, REVIEW_SESSION_SIZE } from "./constants";
-import { requestLesson } from "./api";
-import { buildPracticeStats, createReviewLesson, loadPracticeState, recordPracticeAttempt, rememberLesson, savePracticeState } from "./storage";
+import { requestLesson, requestProfileState } from "./api";
+import { buildPracticeStats, createReviewLesson, getOrCreateProfileId, loadPracticeState, recordPracticeAttempt, rememberLesson, savePracticeState } from "./storage";
 import { getLanguageOption } from "../shared/languages";
 import type { Lesson, Preferences, ScoreResult } from "./types";
 
@@ -17,6 +17,7 @@ interface ActiveSession {
 
 function App() {
 	const [practiceState, setPracticeState] = useState(loadPracticeState);
+	const [profileId] = useState(getOrCreateProfileId);
 	const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
 	const [isLoadingLesson, setIsLoadingLesson] = useState(false);
 	const [error, setError] = useState("");
@@ -24,6 +25,33 @@ function App() {
 	useEffect(() => {
 		savePracticeState(practiceState);
 	}, [practiceState]);
+
+	useEffect(() => {
+		let cancelled = false;
+
+		void requestProfileState(profileId)
+			.then((state) => {
+				if (!state || cancelled) {
+					return;
+				}
+
+				setPracticeState((current) => ({
+					...current,
+					...state,
+					preferences: {
+						...current.preferences,
+						...state.preferences,
+					},
+				}));
+			})
+			.catch(() => {
+				// Keep local state as the fallback if the profile cannot be loaded.
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [profileId]);
 
 	const stats = useMemo(() => buildPracticeStats(practiceState), [practiceState]);
 	const reviewLanguage = useMemo(() => {
@@ -61,6 +89,7 @@ function App() {
 
 		try {
 			const lesson = await requestLesson({
+				profileId,
 				...practiceState.preferences,
 				phraseCount: DEFAULT_PHRASE_COUNT,
 			});
@@ -124,6 +153,7 @@ function App() {
 					<PracticeSession
 						lesson={activeSession.lesson}
 						mode={activeSession.mode}
+						profileId={profileId}
 						reviewQueue={practiceState.savedPhrases}
 						onBack={() => setActiveSession(null)}
 						onScored={handleScored}
