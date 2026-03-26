@@ -46,6 +46,7 @@ It generates compact speaking lessons around a scenario, lets learners hear each
 
 - React 19 for the client application
 - TypeScript across frontend and Worker code
+- Bun for package management and script execution
 - Vite for local development and production builds
 - Hono for the Worker API layer
 - Cloudflare Workers for deployment and edge execution
