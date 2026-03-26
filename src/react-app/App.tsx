@@ -1,139 +1,148 @@
-// src/App.tsx
+import { useEffect, useMemo, useState } from "react";
+import { AppHeader } from "./components/AppHeader";
+import { HomeScreen } from "./components/HomeScreen";
+import { PracticeSession } from "./components/PracticeSession";
+import { DEFAULT_PHRASE_COUNT, REVIEW_SESSION_SIZE } from "./constants";
+import { requestLesson } from "./api";
+import { buildPracticeStats, createReviewLesson, loadPracticeState, recordPracticeAttempt, rememberLesson, savePracticeState } from "./storage";
+import { getLanguageOption } from "../shared/languages";
+import type { Lesson, Preferences, ScoreResult } from "./types";
 
-import { useEffect, useRef, useState } from "react";
-import { MicIcon, StopIcon } from "./assets/icons";
-type RecordState = "idle" | "recording";
+type SessionMode = "lesson" | "review";
 
-
-const WAVE_BARS = 11;
+interface ActiveSession {
+	lesson: Lesson;
+	mode: SessionMode;
+}
 
 function App() {
-	const [name, setName] = useState("unknown");
-	const [input, setInput] = useState("");
-	const [output, setOutput] = useState("")
-	const [recordState, setRecordState] = useState<RecordState>("idle");
-	const [recordedAudio, setRecordedAudio] = useState<Blob>()
-
-	const recorderRef = useRef<MediaRecorder | null>(null)
-	const streamRef = useRef<MediaStream | null>(null)
-	const chunksRef = useRef<BlobPart[]>([])
-
-	const toggleRecording = async () => {
-		if (recordState === "idle") {
-			const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-			streamRef.current = stream
-			const recorder = new MediaRecorder(stream)
-			chunksRef.current = []
-			recorder.ondataavailable = (e) => {
-				console.log(e.data)
-				chunksRef.current.push
-			}
-			recorder.onstop = () => {
-				setRecordedAudio(new Blob(chunksRef.current, { type: recorder.mimeType }))
-			}
-
-			recorder?.start()
-		} else if (recordState === "recording") {
-			recorderRef?.current?.stop()
-			streamRef?.current?.getTracks().forEach(track => track.stop())
-
-		}
-		setRecordState(prev => prev === "idle" ? "recording" : "idle");
-
-	};
+	const [practiceState, setPracticeState] = useState(loadPracticeState);
+	const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
+	const [isLoadingLesson, setIsLoadingLesson] = useState(false);
+	const [error, setError] = useState("");
 
 	useEffect(() => {
-		let ignore = false
-		let controller = new AbortController()
+		savePracticeState(practiceState);
+	}, [practiceState]);
 
-		if (recordedAudio && recordState === "idle") {
-			async function run() {
-				let formData = new FormData()
-				if (recordedAudio) {
-					formData.append("audio", recordedAudio, 'recording.webm')
-				}
-				const resp = await fetch('/api/transcribe', {
-					method: "POST",
-					body: formData,
-					signal: controller.signal
-				})
+	const stats = useMemo(() => buildPracticeStats(practiceState), [practiceState]);
+	const reviewLanguage = useMemo(() => {
+		const preferredLanguage = practiceState.savedPhrases.find((savedPhrase) => (
+			savedPhrase.language === practiceState.preferences.language
+		));
 
-				const transcription = await resp.json()
-				setOutput(transcription)
-			}
+		return preferredLanguage?.language ?? practiceState.savedPhrases[0]?.language ?? null;
+	}, [practiceState.preferences.language, practiceState.savedPhrases]);
 
-			void run()
-
-		}
-		return () => {
-			ignore = true
-			controller.abort()
+	const reviewQueue = useMemo(() => {
+		if (!reviewLanguage) {
+			return [];
 		}
 
-	}, [recordedAudio, recordState])
+		return practiceState.savedPhrases
+			.filter((savedPhrase) => savedPhrase.language === reviewLanguage)
+			.sort((left, right) => left.lastScore - right.lastScore)
+			.slice(0, REVIEW_SESSION_SIZE);
+	}, [practiceState.savedPhrases, reviewLanguage]);
 
+	function setPreference(field: keyof Preferences, value: string) {
+		setPracticeState((current) => ({
+			...current,
+			preferences: {
+				...current.preferences,
+				[field]: value,
+			},
+		}));
+	}
 
-	const onSubmit = async () => {
-		const resp = await fetch("/api/transcribe", {
-			method: "POST",
-			body: JSON.stringify(input)
-		})
-		const test = await resp.json()
-		setOutput(test.response)
+	async function startLesson() {
+		setIsLoadingLesson(true);
+		setError("");
+
+		try {
+			const lesson = await requestLesson({
+				...practiceState.preferences,
+				phraseCount: DEFAULT_PHRASE_COUNT,
+			});
+
+			setPracticeState((current) => rememberLesson(current, lesson));
+			setActiveSession({ lesson, mode: "lesson" });
+		} catch (lessonError) {
+			setError(lessonError instanceof Error ? lessonError.message : "Unable to create the lesson.");
+		} finally {
+			setIsLoadingLesson(false);
+		}
+	}
+
+	function startReview() {
+		const reviewLesson = createReviewLesson(reviewQueue);
+		if (!reviewLesson) {
+			return;
+		}
+
+		const baseLesson = practiceState.lastLesson;
+		setActiveSession({
+			lesson: {
+				...reviewLesson,
+				transcriptionCode: baseLesson?.language === reviewLesson.language
+					? baseLesson.transcriptionCode
+					: getLanguageOption(reviewLesson.language).transcriptionCode,
+				nativeLanguage: practiceState.preferences.nativeLanguage,
+			},
+			mode: "review",
+		});
+	}
+
+	function resumeLastLesson() {
+		if (!practiceState.lastLesson) {
+			return;
+		}
+
+		setError("");
+		setActiveSession({ lesson: practiceState.lastLesson, mode: "lesson" });
+	}
+
+	function handleScored(phraseId: string, result: ScoreResult) {
+		if (!activeSession) {
+			return;
+		}
+
+		const phrase = activeSession.lesson.phrases.find((item) => item.id === phraseId);
+		if (!phrase) {
+			return;
+		}
+
+		setPracticeState((current) => recordPracticeAttempt(current, activeSession.lesson, phrase, result));
 	}
 
 	return (
 		<main className="app-root">
 			<div className="app-content">
+				<AppHeader stats={stats} />
 
-				<header className="app-header">
-					<div className="app-eyebrow">Powered by Mistral AI</div>
-					<h1 className="app-title">Mimicly</h1>
-					<p className="app-subtitle">Speak freely — we'll handle the rest.</p>
-				</header>
-
-				<section className="recorder-section">
-					<div className={`waveform ${recordState === "recording" ? "waveform--active" : ""}`} aria-hidden="true">
-						{Array.from({ length: WAVE_BARS }).map((_, i) => (
-							<span
-								key={i}
-								className="wave-bar"
-								style={{ animationDelay: `${i * 0.065}s` }}
-							/>
-						))}
-					</div>
-
-					<button
-						className={`record-btn ${recordState === "recording" ? "record-btn--recording" : ""}`}
-						onClick={toggleRecording}
-						aria-label={recordState === "recording" ? "Stop recording" : "Start recording"}
-					>
-						{recordState === "idle" ? <MicIcon /> : <StopIcon />}
-					</button>
-
-					<p className="record-status">
-						{recordState === "idle" ? "Tap to begin recording" : "Recording · Tap to stop"}
-					</p>
-				</section>
-
-				{(output || recordState === "recording") && (
-					<section className="transcript-section">
-						<div className="transcript-label">Transcript</div>
-						<div className="transcript-body">
-							{output
-								? <p className="transcript-text">{output}</p>
-								: <p className="transcript-placeholder">Listening…</p>
-							}
-						</div>
-					</section>
+				{activeSession ? (
+					<PracticeSession
+						lesson={activeSession.lesson}
+						mode={activeSession.mode}
+						reviewQueue={practiceState.savedPhrases}
+						onBack={() => setActiveSession(null)}
+						onScored={handleScored}
+					/>
+				) : (
+					<HomeScreen
+						error={error}
+						isLoading={isLoadingLesson}
+						lastLesson={practiceState.lastLesson}
+						preferences={practiceState.preferences}
+						recentLessons={practiceState.recentLessons}
+						reviewQueue={reviewQueue}
+						stats={stats}
+						onPreferenceChange={setPreference}
+						onResumeLastLesson={resumeLastLesson}
+						onStartLesson={startLesson}
+						onStartReview={startReview}
+					/>
 				)}
-
-				{/* Backend integration wired up, hidden from UI until connected */}
-				<div style={{ display: "none" }}>
-					<input name="input" type="text" value={input} onChange={(e) => setInput(e.target.value)} />
-					<button onClick={onSubmit}>Submit</button>
-				</div>
-
 			</div>
 		</main>
 	);

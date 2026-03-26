@@ -1,8 +1,8 @@
 {
 	"name": "mimicly",
-	"description": "A template for building a React application with Vite, Hono, and Cloudflare Workers",
+	"description": "An AI-powered pronunciation practice app built with React and Cloudflare Workers",
 	"cloudflare": {
-		"label": "Vite React Template",
+		"label": "Mimicly",
 		"products": [
 			"Workers"
 		],
@@ -13,8 +13,8 @@
 	},
 	"dependencies": {
 		"@mistralai/mistralai": "^1.14.0",
-		"dotenv": "^17.3.1",
 		"hono": "4.11.1",
+		"openai": "^6.27.0",
 		"react": "19.2.1",
 		"react-dom": "19.2.1"
 	},
