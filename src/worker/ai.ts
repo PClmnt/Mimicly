@@ -42,6 +42,12 @@ interface ScoreInput {
 	userTranscription: string;
 }
 
+interface TopicSuggestionInput {
+	difficulty: Difficulty;
+	language: string;
+	nativeLanguage: string;
+}
+
 const IMAGE_MODEL = "gpt-image-1.5";
 const IMAGE_QUALITY = "low";
 const IMAGE_SIZE = "1024x1024";
@@ -85,6 +91,42 @@ function arrayOfStrings(value: unknown) {
 	}
 
 	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function formatTopicTitle(value: string) {
+	const lowercaseWords = new Set(["a", "an", "and", "at", "for", "from", "in", "of", "on", "the", "to", "with"]);
+
+	return value
+		.replace(/\s+/g, " ")
+		.trim()
+		.toLowerCase()
+		.split(" ")
+		.map((word, index) => {
+			if (index > 0 && lowercaseWords.has(word)) {
+				return word;
+			}
+
+			return word.charAt(0).toUpperCase() + word.slice(1);
+		})
+		.join(" ");
+}
+
+function uniqueTopics(values: string[]) {
+	const seen = new Set<string>();
+	const topics: string[] = [];
+
+	for (const value of values) {
+		const topic = formatTopicTitle(value);
+		const key = topic.toLowerCase();
+		if (!topic || seen.has(key)) {
+			continue;
+		}
+
+		seen.add(key);
+		topics.push(topic);
+	}
+
+	return topics;
 }
 
 function basicSimilarityScore(target: string, actual: string) {
@@ -318,6 +360,52 @@ Ignore punctuation and whitespace. Reward intelligibility over spelling, but kee
 		perfect: parsed.perfect === true || score >= 99,
 		nextStep: stringOrFallback(parsed.nextStep, "Repeat the phrase again with slower pacing and stronger stress control."),
 	};
+}
+
+export async function generateTopicSuggestions(env: WorkerBindings, input: TopicSuggestionInput) {
+	const cacheKey = await sha256(JSON.stringify(input));
+	const cachedTopics = await env.LESSON_CACHE.get(`topics:${cacheKey}`, "json") as string[] | null;
+	if (cachedTopics?.length) {
+		return uniqueTopics(cachedTopics).slice(0, 6);
+	}
+
+	const mistral = getMistral(env);
+	const result = await mistral.chat.complete({
+		model: "mistral-small-latest",
+		messages: [
+			{
+				role: "system",
+				content: `Suggest practical spoken-language lesson topics for ${input.language}.
+The learner's native language is ${input.nativeLanguage}.
+Difficulty: ${input.difficulty}.
+
+Return a JSON object with:
+- topics: array of exactly 6 concise topic strings
+
+Each topic should be specific, useful for real conversation, and 2-5 words long.`,
+			},
+			{
+				role: "user",
+				content: "Suggest topics now.",
+			},
+		],
+		responseFormat: { type: "json_object" },
+	});
+
+	const parsed = parseJsonResponse(result.choices?.[0]?.message?.content);
+	const topics = uniqueTopics(arrayOfStrings(parsed?.topics))
+		.filter((topic) => topic.length <= 48)
+		.slice(0, 6);
+
+	if (topics.length === 0) {
+		throw new Error("Topic suggestions failed. Try again.");
+	}
+
+	await env.LESSON_CACHE.put(`topics:${cacheKey}`, JSON.stringify(topics), {
+		expirationTtl: 60 * 60 * 24 * 7,
+	});
+
+	return topics;
 }
 
 export async function generateLesson(env: WorkerBindings, input: LessonInput): Promise<Lesson> {

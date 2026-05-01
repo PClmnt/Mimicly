@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { generateLesson, generateSceneImage, generateSpeech, readMediaObject, scorePronunciation, transcribe, type WorkerBindings } from "./ai";
+import { generateLesson, generateSceneImage, generateSpeech, generateTopicSuggestions, readMediaObject, scorePronunciation, transcribe, type WorkerBindings } from "./ai";
 import { ensureSchema, loadPracticeState, recordPracticeResult, saveLessonForProfile } from "./persistence";
 import type { Lesson } from "../react-app/types";
 
@@ -94,6 +94,22 @@ app.post("/api/lesson", async (c) => {
 	});
 
 	return c.json({ lesson });
+});
+
+app.post("/api/topics", async (c) => {
+	const body = await c.req.json().catch(() => null);
+	if (!body || typeof body !== "object") {
+		return jsonError(c, 400, "Invalid topic request.");
+	}
+
+	const request = body as Record<string, unknown>;
+	const topics = await generateTopicSuggestions(c.env, {
+		language: requiredString(request.language as string, "Language"),
+		difficulty: requiredString(request.difficulty as string, "Difficulty") as "easy" | "medium" | "hard",
+		nativeLanguage: requiredString(request.nativeLanguage as string, "Native language"),
+	});
+
+	return c.json({ topics });
 });
 
 app.post("/api/image", async (c) => {

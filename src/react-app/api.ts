@@ -12,6 +12,10 @@ interface PracticeStateResponse {
 	state: PracticeState | null;
 }
 
+interface TopicSuggestionsResponse {
+	topics: string[];
+}
+
 interface ScoreRequestInput {
 	audio: Blob;
 	difficulty: string;
@@ -106,6 +110,21 @@ export async function requestSceneImage(phrase: string, translation: string, lan
 
 		const data = await parseJsonOrThrow<SceneImageResponse>(response);
 		return data.imageUrl;
+	} catch (error) {
+		throw new Error(extractErrorMessage(error));
+	}
+}
+
+export async function requestTopicIdeas(language: string, difficulty: string, nativeLanguage: string) {
+	try {
+		const response = await fetch("/api/topics", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ language, difficulty, nativeLanguage }),
+		});
+
+		const data = await parseJsonOrThrow<TopicSuggestionsResponse>(response);
+		return data.topics;
 	} catch (error) {
 		throw new Error(extractErrorMessage(error));
 	}

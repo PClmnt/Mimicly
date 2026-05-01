@@ -1,4 +1,8 @@
-import { DIFFICULTY_OPTIONS, LANGUAGES, TOPIC_SUGGESTIONS } from "../constants";
+import { useEffect, useMemo, useState } from "react";
+import { requestTopicIdeas } from "../api";
+import { SparkleIcon } from "../assets/icons";
+import { DIFFICULTY_OPTIONS, LANGUAGES } from "../constants";
+import { getTopicSuggestions } from "../../shared/languages";
 import type { Lesson, Preferences, PracticeStats, SavedPhrase } from "../types";
 
 interface HomeScreenProps {
@@ -28,6 +32,44 @@ export function HomeScreen({
 	onStartLesson,
 	onStartReview,
 }: HomeScreenProps) {
+	const [aiTopics, setAiTopics] = useState<string[]>([]);
+	const [isLoadingTopics, setIsLoadingTopics] = useState(false);
+	const [topicError, setTopicError] = useState("");
+
+	const suggestedTopics = useMemo(() => (
+		uniqueTopics([
+			...getTopicSuggestions(preferences.language, preferences.difficulty),
+			...aiTopics,
+		]).slice(0, 12)
+	), [aiTopics, preferences.difficulty, preferences.language]);
+
+	useEffect(() => {
+		setAiTopics([]);
+		setTopicError("");
+	}, [preferences.difficulty, preferences.language, preferences.nativeLanguage]);
+
+	function chooseTopic(topic: string) {
+		onPreferenceChange("topic", topic);
+	}
+
+	async function suggestTopics() {
+		setIsLoadingTopics(true);
+		setTopicError("");
+
+		try {
+			const topics = await requestTopicIdeas(
+				preferences.language,
+				preferences.difficulty,
+				preferences.nativeLanguage,
+			);
+			setAiTopics(topics);
+		} catch (suggestionError) {
+			setTopicError(suggestionError instanceof Error ? suggestionError.message : "Unable to suggest topics.");
+		} finally {
+			setIsLoadingTopics(false);
+		}
+	}
+
 	return (
 		<section className="dashboard">
 			<div className="panel panel--primary">
@@ -74,22 +116,41 @@ export function HomeScreen({
 						</select>
 					</label>
 
-					<label className="field field--wide">
+					<div className="field field--wide">
 						<span className="field-label">Topic</span>
 						<input
 							className="field-control"
-							list="topic-suggestions"
 							value={preferences.topic}
 							onChange={(event) => onPreferenceChange("topic", event.target.value)}
 							disabled={isLoading}
 							placeholder="Ordering at a cafe"
 						/>
-						<datalist id="topic-suggestions">
-							{TOPIC_SUGGESTIONS.map((topic) => (
-								<option key={topic} value={topic} />
-							))}
-						</datalist>
-					</label>
+						<div className="topic-picker">
+							<div className="topic-chip-row">
+								{suggestedTopics.map((topic) => (
+									<button
+										key={topic}
+										type="button"
+										className={topic === preferences.topic ? "topic-chip topic-chip--active" : "topic-chip"}
+										onClick={() => chooseTopic(topic)}
+										disabled={isLoading}
+									>
+										{topic}
+									</button>
+								))}
+							</div>
+							<button
+								type="button"
+								className="text-button topic-suggest-button"
+								onClick={suggestTopics}
+								disabled={isLoading || isLoadingTopics}
+							>
+								<SparkleIcon />
+								<span>{isLoadingTopics ? "Suggesting..." : "Suggest topics"}</span>
+							</button>
+						</div>
+						{topicError && <p className="inline-error inline-error--compact">{topicError}</p>}
+					</div>
 
 					<label className="field field--wide">
 						<span className="field-label">Native language</span>
@@ -185,4 +246,18 @@ export function HomeScreen({
 			</div>
 		</section>
 	);
+}
+
+function uniqueTopics(topics: string[]) {
+	const seen = new Set<string>();
+
+	return topics.filter((topic) => {
+		const key = topic.toLowerCase();
+		if (seen.has(key)) {
+			return false;
+		}
+
+		seen.add(key);
+		return true;
+	});
 }
