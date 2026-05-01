@@ -42,6 +42,11 @@ interface ScoreInput {
 	userTranscription: string;
 }
 
+const IMAGE_MODEL = "gpt-image-1.5";
+const IMAGE_QUALITY = "low";
+const IMAGE_SIZE = "1024x1024";
+const IMAGE_FORMAT = "webp";
+
 function getMistral(env: WorkerBindings) {
 	return new Mistral({ apiKey: env.MISTRAL_API_KEY });
 }
@@ -186,36 +191,39 @@ export async function transcribe(env: WorkerBindings, audioBlob: File, transcrip
 }
 
 export async function generateSceneImage(env: WorkerBindings, phrase: string, translation: string, language: string) {
-	const key = await sha256(JSON.stringify({ phrase, translation, language }));
-	const objectKey = `images/${key}.png`;
+	const key = await sha256(JSON.stringify({
+		phrase,
+		translation,
+		language,
+		model: IMAGE_MODEL,
+		quality: IMAGE_QUALITY,
+		size: IMAGE_SIZE,
+		format: IMAGE_FORMAT,
+	}));
+	const objectKey = `images/${key}.${IMAGE_FORMAT}`;
 	const existing = await env.MEDIA_BUCKET.head(objectKey);
 	if (!existing) {
 		const openai = getOpenAI(env);
 		const response = await openai.images.generate({
-			model: "gpt-image-1-mini",
-			prompt: `Create a clean, warm illustration for a language-learning flashcard. Show the meaning of "${translation}" while preserving the feel of ${language}. No text, no captions, no UI, no borders.`,
+			model: IMAGE_MODEL,
+			prompt: `Simple visual memory hook for a language flashcard. Show "${translation}" as a clear everyday scene with a light ${language} cultural feel. No text, no captions, no UI, no borders.`,
 			n: 1,
-			size: "1024x1024",
+			size: IMAGE_SIZE,
+			quality: IMAGE_QUALITY,
+			output_format: IMAGE_FORMAT,
+			output_compression: 80,
 		});
 
-		const image = response.data?.[0];
+		const image = response.data?.[0]?.b64_json;
 		if (!image) {
 			throw new Error("Image generation returned no image.");
 		}
 
-		let bytes: Uint8Array;
-		if (image.b64_json) {
-			bytes = decodeBase64(image.b64_json);
-		} else if (image.url) {
-			const downloaded = await fetch(image.url);
-			bytes = new Uint8Array(await downloaded.arrayBuffer());
-		} else {
-			throw new Error("Image generation returned no usable image payload.");
-		}
+		const bytes = decodeBase64(image);
 
 		await env.MEDIA_BUCKET.put(objectKey, bytes, {
 			httpMetadata: {
-				contentType: "image/png",
+				contentType: "image/webp",
 				cacheControl: "public, max-age=31536000, immutable",
 			},
 		});
@@ -259,7 +267,7 @@ export async function generateSpeech(env: WorkerBindings, text: string, language
 }
 
 export async function readMediaObject(env: WorkerBindings, kind: "image" | "speech", key: string) {
-	const objectKey = kind === "image" ? `images/${key}.png` : `speech/${key}.mp3`;
+	const objectKey = kind === "image" ? `images/${key}.${IMAGE_FORMAT}` : `speech/${key}.mp3`;
 	return env.MEDIA_BUCKET.get(objectKey);
 }
 
