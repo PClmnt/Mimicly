@@ -103,7 +103,7 @@ export function HomeScreen({
 					</label>
 				</div>
 
-				<div className="action-row">
+				<div className="action-row setup-actions">
 					<button className="primary-button" onClick={onStartLesson} disabled={isLoading}>
 						{isLoading ? "Building session..." : "Start practice"}
 					</button>

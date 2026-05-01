@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { requestSceneImage, requestSpeech } from "../api";
-import { ChevronLeftIcon, ChevronRightIcon, RefreshIcon } from "../assets/icons";
+import { ChevronLeftIcon, ChevronRightIcon } from "../assets/icons";
 import { PhraseCard } from "./PhraseCard";
 import type { Lesson, SavedPhrase, ScoreResult } from "../types";
 
@@ -135,16 +135,16 @@ export function PracticeSession({
 	return (
 		<section className="session-shell">
 			<div className="session-meta">
-				<button className="text-button" onClick={onBack}>
-					<RefreshIcon />
-					<span>Back to dashboard</span>
-				</button>
-
 				<div className="session-copy">
 					<span className="badge">{mode === "review" ? "Review" : "Lesson"}</span>
 					<h2 className="session-title">{lesson.title}</h2>
 					<p className="session-intro">{lesson.intro}</p>
 				</div>
+
+				<button className="text-button session-back-button" onClick={onBack}>
+					<ChevronLeftIcon />
+					<span>Back to dashboard</span>
+				</button>
 			</div>
 
 			<div className="progress-header">

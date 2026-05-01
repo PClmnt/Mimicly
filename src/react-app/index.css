@@ -207,6 +207,10 @@ img {
 	gap: 1rem;
 }
 
+.setup-actions {
+	margin-top: 1.25rem;
+}
+
 .field {
 	display: flex;
 	flex-direction: column;
@@ -394,6 +398,11 @@ img {
 
 .session-copy {
 	flex: 1;
+}
+
+.session-back-button {
+	flex-shrink: 0;
+	margin-top: 0.15rem;
 }
 
 .progress-header {
@@ -606,6 +615,11 @@ img {
 	.session-meta {
 		flex-direction: column;
 		align-items: flex-start;
+	}
+
+	.session-back-button {
+		order: -1;
+		margin-top: 0;
 	}
 }
 
